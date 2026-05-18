@@ -26,8 +26,6 @@
 - After eks-addons apply: run [`scripts/utils/get-argocd-credentials.sh`](scripts/utils/get-argocd-credentials.sh) to fetch the initial ArgoCD admin password from the `argocd-initial-admin-secret` Secret. Login at the ArgoCD URL the script prints, rotate the password, then delete the initial secret.
 - Review infrastructure
 
-**Gating between steps:** after generating each module in this phase, stop and ask whether to proceed to the next module or wait for the user to run `terraform fmt/validate/init/plan/apply` against the module just generated. Do not chain module generation without explicit user confirmation — the user typically wants to validate one module end-to-end before scaffolding the next, since errors compound otherwise.
-
 ## Phase 4 — Kubernetes
 - Generate Helm/Kustomize packages
 - Generate manifests

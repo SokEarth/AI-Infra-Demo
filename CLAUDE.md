@@ -4,7 +4,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this repo is
 
-A from-scratch AI-assisted platform engineering demo. There is **no application code or infrastructure in the tree yet** — the repo is the *scaffold target*. Claude generates the Terraform, Kubernetes manifests, Helm charts, Bash utilities, and CI workflows by walking the user through an 8-phase process. Treat each session as continuing that build, not maintaining an existing system.
+A from-scratch AI-assisted platform engineering demo. The repo is the *scaffold target* — Claude generates the Terraform, Kubernetes manifests, Helm charts, Bash utilities, and CI workflows by walking the user through an 8-phase process. Treat each session as continuing that build, not maintaining an existing system.
+
+**Current state:** entering Phase 3. No `terraform/` tree on disk yet; `.github/workflows/` is empty. The repo contains only [workflow.md](workflow.md), the RFC docs under [docs/](docs/), and this guidance file. Always re-check the actual directory contents before assuming where the build is — the "current state" line in CLAUDE.md is the most common thing to fall stale and should be updated as phases progress.
+
+## Layout
+
+- `terraform/modules/<name>/` — wrapper module (one per concern). Pins upstream community modules.
+- `terraform/environments/<env>/<module>/` — root that instantiates the wrapper, sets provider + backend, reads sibling-root outputs via `terraform_remote_state`.
+- Each root has the standard split: `main.tf`, `variables.tf`, `outputs.tf`, `versions.tf`, `backend.tf`. The bootstrap root's `backend.tf` ships pre-populated with the S3 bucket/table names it will create — first apply uses local state, then `terraform init -migrate-state` moves it.
+- `.tfvars` and `*.lock.hcl` are gitignored. Lock files are intentionally not committed for this demo.
 
 ## Canonical references — read these before generating anything
 
