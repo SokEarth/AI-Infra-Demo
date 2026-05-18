@@ -2,70 +2,71 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Repository Purpose
+## What this repo is
 
-This is an AI-assisted infrastructure demo that generates IaC (Terraform/Terragrunt), Kubernetes manifests, and Bash scripts following RFC platform standards. The workflow progresses through 8 phases: Architecture → Repo Structure → Infrastructure → Kubernetes → GitOps → CI/CD → Validation → Deployment.
+A from-scratch AI-assisted platform engineering demo. There is **no application code or infrastructure in the tree yet** — the repo is the *scaffold target*. Claude generates the Terraform, Kubernetes manifests, Helm charts, Bash utilities, and CI workflows by walking the user through an 8-phase process. Treat each session as continuing that build, not maintaining an existing system.
 
-## Validation Commands
+## Canonical references — read these before generating anything
+
+- [workflow.md](workflow.md) — the 8-phase script (Architecture → Repo → Infrastructure → Kubernetes → GitOps → CI/CD → Validation → Deployment). Includes the hand-off steps between phases (state migration after bootstrap, kubeconfig update after EKS, ArgoCD credentials fetch after eks-addons, local-DNS setup after ALBs).
+- [docs/terraform.md](docs/terraform.md) — RFC-PLAT-002 (Terraform)
+- [docs/kubernetes.md](docs/kubernetes.md) — RFC-PLAT-003 (Kubernetes)
+- [docs/bashscript.md](docs/bashscript.md) — RFC-PLAT-001 (Bash)
+- [docs/infrastructure.png](docs/infrastructure.png) — target architecture diagram
+
+The RFC docs are the source of truth for standards; the summary below only flags points that recur as gotchas in this project.
+
+## Project conventions
+
+- **Org prefix:** `somto`. Resource names follow `somto-<env>-<region_short>-<service>` (e.g. `somto-prod-euw1-eks`).
+- **Envs:** `dev`, `stg`, `prod` (note `stg`, not `staging`, in variable validation).
+- **Region:** primary is `eu-west-1` / `euw1`.
+- **Hub-and-spoke ArgoCD:** ArgoCD is installed in **prod only** via `eks-addons`. Dev and stg are spoke clusters registered with the prod hub via `scripts/bootstrap/argocd-register-cluster.sh`. `external-secrets` is installed in every env.
+- **Demo scope:** this project name contains "demo" — CI omits shellcheck/shfmt, EKS `access_entries` skips a `ci_deployer` entry, and Ingresses default to HTTP-only with HTTPS kept as commented production reference.
+
+## Phase 3 gating (most common point of failure)
+
+After generating **each** Terraform module in Phase 3 (bootstrap → vpc → eks → rds → iam → eks-addons), stop and ask the user before scaffolding the next one. The user validates one module end-to-end (`fmt` → `validate` → `init` → `plan` → `apply`) before moving on. Chaining module generation produces compounding errors that are painful to unwind.
+
+## Validation commands
 
 ```bash
-# Terraform
 terraform fmt -check -recursive
 terraform validate
-terraform plan          # never apply directly to prod
+terraform plan                              # never apply directly to prod
 
-# Helm / Kubernetes
 helm lint ./charts/<chart>
 kubectl apply --dry-run=client -f <manifest>
-
-# Bash scripts
-shellcheck <script>.sh
-shfmt -d <script>.sh
 ```
 
-CI/CD pipeline order: `fmt` → `validate` → security scan → policy eval → `plan` → approval (prod) → `apply`
+CI/CD pipeline order: `fmt` → `validate` → security scan → policy eval → `plan` → approval (prod) → `apply`.
 
-## Standards
+## Standards quick-reference
 
-### Terraform — RFC-PLAT-002
+These are the rules most likely to bite during generation. For the full lists see the `docs/` files.
 
-- Module structure: `modules/{vpc,eks,rds,...}/` and `environments/{dev,staging,prod}/`
-- Naming convention: `<org>-<env>-<region>-<service>-<resource>` (e.g. `awesome-prod-euw1-eks-cluster`)
-- Remote state only (S3 + DynamoDB, GCS, or Terraform Cloud) — local state is forbidden in shared envs
-- All module refs must be version-pinned (`ref=v1.2.3`) — no floating branches
-- No wildcard IAM (`"Action": "*"`); no public databases; no open SSH (`0.0.0.0/0`)
-- Encryption mandatory: S3, EBS, RDS, secrets storage
-- Secrets via AWS Secrets Manager or Vault — never in `.tf` files
-- Critical resources: `lifecycle { prevent_destroy = true }`
-- All resources require tags: `Environment`, `Owner`, `CostCenter`, `ManagedBy = "terraform"`
-- Variable validation required for `env` (allowed: `dev`, `stg`, `prod`)
+**Terraform**
+- Remote state only. Bootstrap root starts with `backend "local" {}`, then migrates to S3 after first apply (`terraform init -migrate-state`). Bootstrap also owns the GitHub Actions OIDC provider + per-env CI roles.
+- All module sources version-pinned (`ref=v1.2.3`).
+- Mandatory tags: `Environment`, `Owner`, `CostCenter`, `ManagedBy = "terraform"`.
+- `variable "env"` must validate against `["dev", "stg", "prod"]`.
+- Critical resources need `lifecycle { prevent_destroy = true }`.
+- Encryption mandatory on S3, EBS, RDS, secrets. No `Action = "*"`, no public DB, no `0.0.0.0/0` SSH.
 
-### Kubernetes — RFC-PLAT-003
+**Kubernetes**
+- Every container: `runAsNonRoot: true`, `allowPrivilegeEscalation: false`, `readOnlyRootFilesystem: true`.
+- Resource requests/limits mandatory (defaults: `cpu: 100m`, `memory: 128Mi` / `memory: 512Mi`).
+- `readinessProbe` + `livenessProbe` always; `startupProbe` for slow-start services.
+- Prod HA: ≥2 replicas, `PodDisruptionBudget minAvailable: 2`, pod anti-affinity on hostname, topology spread across zones.
+- No `latest` tags. Default-deny `NetworkPolicy` per namespace. Secrets only via External Secrets Operator. All deploys via ArgoCD (no direct `kubectl apply` to prod).
+- Kustomize: use `labels: [{ pairs: ..., includeSelectors: true }]`, not deprecated `commonLabels`.
 
-- All containers require a security context: `runAsNonRoot: true`, `allowPrivilegeEscalation: false`, `readOnlyRootFilesystem: true`
-- Resource limits are mandatory (requests: `cpu: 100m`, `memory: 128Mi`; limit: `memory: 512Mi`)
-- Required probes: `readinessProbe`, `livenessProbe`, and `startupProbe` for slow-start services
-- Production HA: ≥ 2 replicas (prefer 3+), `PodDisruptionBudget` with `minAvailable: 2`, pod anti-affinity on `kubernetes.io/hostname`, topology spread across zones
-- Image tags must be immutable — `latest` is forbidden; images must be scanned (Trivy) and signed (Cosign)
-- Default-deny `NetworkPolicy` required in all namespaces
-- Secrets via External Secrets Operator or Vault — never plaintext in Git
-- No wildcard RBAC verbs; no `cluster-admin` bindings for applications
-- All deployments via GitOps (Argo CD) — direct `kubectl apply` in production is forbidden
-- Workloads must expose Prometheus metrics and emit structured JSON logs
+**Bash**
+- Header: `#!/usr/bin/env bash` + `set -euo pipefail` + `IFS=$'\n\t'`.
+- Log format: `YYYY-MM-DDTHH:MM:SSZ [LEVEL] [SCRIPT] message`.
+- Exit codes: 0 success, 1 generic, 2 validation, 3 dependency, 4 timeout, 5 permission.
+- Must be idempotent and support `--dry-run`. No `eval`, no `|| true`, no hardcoded secrets.
 
-### Bash Scripts — RFC-PLAT-001
+## Available skills
 
-Every script must start with:
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
-IFS=$'\n\t'
-```
-
-- Structured log format: `YYYY-MM-DDTHH:MM:SSZ [LEVEL] [SCRIPT] message`
-- Exit codes: `0`=success, `1`=generic, `2`=validation, `3`=dependency, `4`=timeout, `5`=permission
-- `eval`, hardcoded secrets, and `|| true` silent failures are forbidden
-- All inputs validated before use: `: "${ENV:?ENV is required}"`
-- Scripts must be idempotent and support `--dry-run`
-- Debug mode: `[[ "$DEBUG" == "true" ]] && set -x`
-- Lint with `shellcheck`, format with `shfmt` before committing
+This project ships skills the user expects Claude to invoke instead of hand-writing the equivalent files: `terraform-modules`, `terragrunt-generator`, `terragrunt-layout`, `app-scaffold`, `bash-generator`. When a phase task matches one of these, call the skill rather than producing the output from scratch.
