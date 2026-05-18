@@ -8,10 +8,6 @@
 # lock files
 *.lock.hcl
 
-# Terragrunt files
-.terragrunt-cache
-*.terragrunt-cache
-
 # Crash log files
 crash.log
 crash.*.log
